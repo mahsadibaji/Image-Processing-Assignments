@@ -1,0 +1,905 @@
+{
+ "cells": [
+  {
+   "cell_type": "code",
+   "execution_count": 1,
+   "id": "727b0b77",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import vtk\n",
+    "from ipyvtklink.viewer import ViewInteractiveWidget\n",
+    "import numpy as np\n",
+    "import ipywidgets as widgets\n",
+    "from IPython.display import display"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 2,
+   "id": "ea7acdad",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "hip_path = \"/home/mahsadibaji/mdsc689-03-notebooks/Hip\"\n",
+    "thrx_path = \"/home/mahsadibaji/mdsc689-03-notebooks/Thorax\"\n",
+    "head_path = \"/home/mahsadibaji/mdsc689-03-notebooks/head.nii\"\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 14,
+   "id": "d33bce4d",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "class vtk_pipeline:\n",
+    "    \n",
+    "    def __init__(self, path, filetype, render_size = 300):\n",
+    "        self.path = path\n",
+    "        self.filetype = filetype\n",
+    "        self.render_size = render_size\n",
+    "        \n",
+    "\n",
+    "        self.out, self.outport, self.dim = self.image_reader()\n",
+    "                \n",
+    "        self.resizers = {}\n",
+    "        self.mappers = {}\n",
+    "        self.actors = {}\n",
+    "        \n",
+    "        self.kernel_size = (3, 3, 3)\n",
+    "        \n",
+    "        self.segmentation_color = (1.0, 0.0, 0.0) #RGB value\n",
+    "        self.segmentation_opacity = 1.0\n",
+    "        self.segmented = None\n",
+    "        \n",
+    "        self.renderer = None\n",
+    "        self.render_window = None\n",
+    "        self.interactor = None\n",
+    "        \n",
+    "    def image_reader(self):   \n",
+    "        if self.filetype.lower() == 'dicom':  # Load a DICOM image from file into a vtk pipeline.\n",
+    "            img_reader = vtk.vtkDICOMImageReader()\n",
+    "            img_reader.SetDirectoryName(self.path)\n",
+    "            img_reader.Update()\n",
+    "            out = img_reader.GetOutput()\n",
+    "            outport = img_reader.GetOutputPort()\n",
+    "            dim = out.GetDimensions()\n",
+    "            \n",
+    "        elif self.filetype.lower() == 'niftii': # Load a NIFTI image from file into a vtk pipeline.\n",
+    "            img_reader = vtk.vtkNIFTIImageReader()\n",
+    "            img_reader.SetFileName(self.path)\n",
+    "            img_reader.Update()\n",
+    "            out = img_reader.GetOutput()\n",
+    "            outport = img_reader.GetOutputPort()\n",
+    "            dim = out.GetDimensions()\n",
+    "                    \n",
+    "        print(\"image read\")\n",
+    "        \n",
+    "        return out, outport, dim\n",
+    "    \n",
+    "                        \n",
+    "    def gaussian_filter(self): #Done\n",
+    "        dimensionality = 3\n",
+    "        \n",
+    "        gaussian = vtk.vtkImageGaussianSmooth()\n",
+    "        gaussian.SetDimensionality(dimensionality)\n",
+    "        gaussian.SetInputData(self.out)\n",
+    "        gaussian.Update()\n",
+    "        \n",
+    "        return gaussian\n",
+    "\n",
+    "    def render_surface(self, iso_value, color=None, g_filter=True, method=\"Marching\"):\n",
+    "        \n",
+    "        if g_filter:\n",
+    "            self.out = self.gaussian_filter().GetOutput()\n",
+    "            \n",
+    "        if method.lower()==\"marching\":\n",
+    "            print(\"MarchingCubes\")\n",
+    "            surface = vtk.vtkImageMarchingCubes()\n",
+    "            surface.SetInputData(self.out)\n",
+    "            surface.SetValue(0, iso_value)\n",
+    "            surface.ComputeNormalsOn()\n",
+    "            surface.Update()\n",
+    "            \n",
+    "        elif method.lower()==\"contour\":\n",
+    "            print(\"ContourFilter\")\n",
+    "            surface = vtk.vtkContourFilter()\n",
+    "            surface.SetInputData(self.out)\n",
+    "            surface.SetValue(0, iso_value)\n",
+    "            surface.Update()\n",
+    "        else:\n",
+    "            print(\"invalid method choice\")\n",
+    "            \n",
+    "        lut = vtk.vtkLookupTable() # Lookup table to set the color of 3D surface rendering\n",
+    "        lut.SetNumberOfTableValues(2)\n",
+    "        lut.SetTableValue(0, 1, 0, 0, 1)\n",
+    "        lut.SetTableValue(1, *color, 1) \n",
+    "\n",
+    "        surface_mapper = vtk.vtkPolyDataMapper()\n",
+    "        surface_mapper.SetInputData(surface.GetOutput())\n",
+    "        surface_mapper.SetLookupTable(lut) \n",
+    "        surface_mapper.Update()\n",
+    "    \n",
+    "        \n",
+    "        surface_actor = vtk.vtkActor()\n",
+    "        surface_actor.SetMapper(surface_mapper)\n",
+    "\n",
+    "        self.render_window = vtk.vtkRenderWindow()\n",
+    "        self.render_window.SetOffScreenRendering(True)\n",
+    "        self.render_window.SetSize(self.render_size, self.render_size)\n",
+    "\n",
+    "        self.renderer = vtk.vtkRenderer()\n",
+    "        self.renderer.ResetCamera()       \n",
+    "        self.render_window.AddRenderer(self.renderer)\n",
+    "        \n",
+    "        self.renderer.AddActor(surface_actor)\n",
+    "\n",
+    "        interactorStyle = vtk.vtkInteractorStyleTrackballActor()\n",
+    "\n",
+    "        self.interactor = vtk.vtkRenderWindowInteractor()\n",
+    "        self.interactor.SetRenderWindow(self.render_window)\n",
+    "        self.interactor.SetInteractorStyle(interactorStyle)        \n",
+    "        \n",
+    "        self.interactor.Initialize()\n",
+    "        \n",
+    "    def render_volume(self, transfer_colors=None, transfer_op = None, g_filter=True):\n",
+    "        \n",
+    "        if g_filter:\n",
+    "            self.out = self.gaussian_filter().GetOutput()            \n",
+    "        print('image mapper created')\n",
+    "        \n",
+    "        ctf = vtk.vtkColorTransferFunction()  #Set different colors for different organs based on intensity values\n",
+    "        for val in transfer_colors.values():  \n",
+    "            ctf.AddRGBPoint(*val)        \n",
+    "        \n",
+    "        otf = vtk.vtkPiecewiseFunction() #Set different opacity for different organs based on intensity values\n",
+    "        for val in transfer_op.values():\n",
+    "            otf.AddPoint(*val)\n",
+    "        \n",
+    "        #Set volume properties      \n",
+    "        volume_property = vtk.vtkVolumeProperty()\n",
+    "        volume_property.ShadeOn()\n",
+    "        volume_property.SetScalarOpacity(otf)\n",
+    "        volume_property.SetColor(ctf)\n",
+    "        volume_property.SetInterpolationTypeToLinear()\n",
+    "        \n",
+    "        volume_mapper = vtk.vtkFixedPointVolumeRayCastMapper()\n",
+    "        volume_mapper.SetInputData(self.out)\n",
+    "        volume_mapper.Update()\n",
+    "        \n",
+    "        volume_actor = vtk.vtkVolume()\n",
+    "        volume_actor.SetMapper(volume_mapper)\n",
+    "        volume_actor.SetProperty(volume_property)\n",
+    "\n",
+    "        self.renderer = vtk.vtkRenderer()\n",
+    "        self.renderer.AddVolume(volume_actor)\n",
+    "        self.renderer.ResetCamera()\n",
+    "\n",
+    "        self.render_window = vtk.vtkRenderWindow()\n",
+    "        self.render_window.SetOffScreenRendering(True)\n",
+    "        self.render_window.SetSize(self.render_size, self.render_size)\n",
+    "        self.render_window.AddRenderer(self.renderer)\n",
+    "\n",
+    "        interactorStyle = vtk.vtkInteractorStyleTrackballActor()\n",
+    "\n",
+    "        self.interactor = vtk.vtkRenderWindowInteractor()\n",
+    "        self.interactor.SetRenderWindow(self.render_window)\n",
+    "        self.interactor.SetInteractorStyle(interactorStyle)        \n",
+    "\n",
+    "        self.interactor.Initialize()        "
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "218d0600",
+   "metadata": {},
+   "source": [
+    "# Experiments"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "958f3f38",
+   "metadata": {},
+   "source": [
+    "## 3D Surface Rendering\n",
+    "Two methods are used to render surfaces for each sample dataset. The results are almost similar.\n",
+    "\n",
+    "1. `vtkImageMarchingCubes()`: Marching Cubes is a 3D isosurface extraction algorithm that works by dividing a 3D space into smaller cubes and extracting an isosurface by examining the values at the vertices of each cube and mapping the resulting configuration to a set of triangles that define the surface. This process is repeated for all cubes to create the final isosurface. Marching Cubes is widely used for extracting surfaces from scalar data in scientific visualization and medical imaging.\n",
+    "2. `.vtkContourFilter()`: This algorithm generates isosurfaces from structured or unstructured point data. It can be used to extract surfaces from volumetric data, or to generate contours from scalar or vector data."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 49,
+   "id": "1d4a1cb2",
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "image read\n"
+     ]
+    },
+    {
+     "data": {
+      "application/vnd.jupyter.widget-view+json": {
+       "model_id": "",
+       "version_major": 2,
+       "version_minor": 0
+      },
+      "text/plain": [
+       "ViewInteractiveWidget(height=600, layout=Layout(height='auto', width='100%'), width=600)"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    }
+   ],
+   "source": [
+    "head_m = vtk_pipeline(path=head_path, filetype='niftii', render_size=600)\n",
+    "\n",
+    "head_m.render_surface(iso_value=500, color=(0.9, 0.3, 0.5),g_filter=True, method=\"marching\")\n",
+    "\n",
+    "ViewInteractiveWidget(head_m.render_window)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "1f261ff3",
+   "metadata": {},
+   "source": [
+    "Brain Surface rendering(head dataset) after Gaussian filtering using MarchingCubes Algorithm: iso_value=500"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 55,
+   "id": "e35ec6d5",
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "image read\n"
+     ]
+    },
+    {
+     "data": {
+      "application/vnd.jupyter.widget-view+json": {
+       "model_id": "abc15bc97cd446629c5951b4115079fe",
+       "version_major": 2,
+       "version_minor": 0
+      },
+      "text/plain": [
+       "ViewInteractiveWidget(height=600, layout=Layout(height='auto', width='100%'), width=600)"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    }
+   ],
+   "source": [
+    "head_c = vtk_pipeline(path=head_path, filetype='niftii', render_size=600)\n",
+    "\n",
+    "head_c.render_surface(iso_value=500, color=(0.9, 0.3, 0.5),g_filter=True, method=\"contour\")\n",
+    "\n",
+    "ViewInteractiveWidget(head_c.render_window)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "7ba7e88d",
+   "metadata": {},
+   "source": [
+    "Brain Surface rendering (head dataset) after Gaussian filtering using ContourFilter Algorithm: iso_value=500"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 51,
+   "id": "b4faa151",
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "image read\n"
+     ]
+    },
+    {
+     "data": {
+      "application/vnd.jupyter.widget-view+json": {
+       "model_id": "",
+       "version_major": 2,
+       "version_minor": 0
+      },
+      "text/plain": [
+       "ViewInteractiveWidget(layout=Layout(height='auto', width='100%'), width=500)"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    }
+   ],
+   "source": [
+    "thorax_m = vtk_pipeline(path=thrx_path, filetype='dicom', render_size=500)\n",
+    "thorax_m.render_surface(iso_value=200, color=(1, 0.8, 0.7), g_filter=True, method=\"marching\")\n",
+    "\n",
+    "ViewInteractiveWidget(thorax_m.render_window)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "99f8d936",
+   "metadata": {},
+   "source": [
+    "Thorax Surface rendering after Gaussian filtering using MarchingCubes Algorithm: iso_value=200"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 58,
+   "id": "6f1d4a23",
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "image read\n",
+      "ContourFilter\n"
+     ]
+    },
+    {
+     "data": {
+      "application/vnd.jupyter.widget-view+json": {
+       "model_id": "b0d579727f444f458bb5cda715f6c3fc",
+       "version_major": 2,
+       "version_minor": 0
+      },
+      "text/plain": [
+       "ViewInteractiveWidget(layout=Layout(height='auto', width='100%'), width=500)"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    }
+   ],
+   "source": [
+    "thorax_c = vtk_pipeline(path=thrx_path, filetype='dicom', render_size=500)\n",
+    "thorax_c.render_surface(iso_value=200, color=(1, 0.8, 0.7), g_filter=True, method=\"contour\")\n",
+    "\n",
+    "ViewInteractiveWidget(thorax_c.render_window)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "7b08b356",
+   "metadata": {},
+   "source": [
+    "Thorax Surface rendering after Gaussian filtering using ContourFilter Algorithm: iso_value=200"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 15,
+   "id": "e42fb9c1",
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "image read\n",
+      "MarchingCubes\n"
+     ]
+    },
+    {
+     "data": {
+      "application/vnd.jupyter.widget-view+json": {
+       "model_id": "f50f8eb96eba48149276d22f80e5d8a2",
+       "version_major": 2,
+       "version_minor": 0
+      },
+      "text/plain": [
+       "ViewInteractiveWidget(layout=Layout(height='auto', width='100%'), width=500)"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    }
+   ],
+   "source": [
+    "hip_m = vtk_pipeline(path=hip_path, filetype='dicom', render_size=500)\n",
+    "hip_m.render_surface(iso_value=200,color=(1, 0.8, 0.7), g_filter=True, method=\"marching\")\n",
+    "\n",
+    "ViewInteractiveWidget(hip_m.render_window)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "0d4be8bc",
+   "metadata": {},
+   "source": [
+    "Hip Surface rendering after Gaussian filtering using MarchingCubes Algorithm: iso_value=200"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 59,
+   "id": "7710dbff",
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "image read\n",
+      "ContourFilter\n"
+     ]
+    },
+    {
+     "data": {
+      "application/vnd.jupyter.widget-view+json": {
+       "model_id": "f706f7b35c3e4b0491675101a604fe43",
+       "version_major": 2,
+       "version_minor": 0
+      },
+      "text/plain": [
+       "ViewInteractiveWidget(layout=Layout(height='auto', width='100%'), width=500)"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    }
+   ],
+   "source": [
+    "hip_c = vtk_pipeline(path=hip_path, filetype='dicom', render_size=500)\n",
+    "hip_c.render_surface(iso_value=200,color=(1, 0.8, 0.7), g_filter=True, method=\"contour\")\n",
+    "\n",
+    "ViewInteractiveWidget(hip_c.render_window)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "8f6871e7",
+   "metadata": {},
+   "source": [
+    "Hip Surface rendering after Gaussian filtering using Contour Algorithm: iso_value=200"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "7774ecd1",
+   "metadata": {},
+   "source": [
+    "## Volume Rendering"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 72,
+   "id": "14c874da",
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "image read\n",
+      "image mapper created\n"
+     ]
+    },
+    {
+     "data": {
+      "application/vnd.jupyter.widget-view+json": {
+       "model_id": "e0de111d933f4a4aaf1c20ac9303a934",
+       "version_major": 2,
+       "version_minor": 0
+      },
+      "text/plain": [
+       "ViewInteractiveWidget(height=600, layout=Layout(height='auto', width='100%'), width=600)"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    }
+   ],
+   "source": [
+    "head_vol = vtk_pipeline(path=head_path, filetype='niftii', render_size=600)\n",
+    "\n",
+    "head_tc = {\n",
+    "    \"back_ground\": [0, 0.0, 0.0, 0.0],\n",
+    "    \"skin\": [400,1, 0.8, 0.7],\n",
+    "    \"bone\": [450, 0.9, 0.3, 0.5]\n",
+    "}\n",
+    "\n",
+    "\n",
+    "head_to = {\n",
+    "    \"back_ground\": [0,0.0],\n",
+    "    \"skin\": [400,0.03],\n",
+    "    \"bone\": [450,1]\n",
+    "}\n",
+    "\n",
+    "head_vol.render_volume(transfer_colors=head_tc , transfer_op=head_to, g_filter=True)\n",
+    "\n",
+    "ViewInteractiveWidget(head_vol.render_window)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "85c75e4e",
+   "metadata": {},
+   "source": [
+    "Head Volume Rendering after Gaussian filtering: different colors are being used for the organs inside head (pink) with intensity 450 and skin/scalp(skin color) with intensity 400"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 10,
+   "id": "e9121c98",
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "image read\n",
+      "image mapper created\n"
+     ]
+    },
+    {
+     "data": {
+      "application/vnd.jupyter.widget-view+json": {
+       "model_id": "6fa9ff55abe849cdb63654f007058f6b",
+       "version_major": 2,
+       "version_minor": 0
+      },
+      "text/plain": [
+       "ViewInteractiveWidget(height=600, layout=Layout(height='auto', width='100%'), width=600)"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    }
+   ],
+   "source": [
+    "thrx_vol = vtk_pipeline(path=thrx_path, filetype='dicom', render_size=600)\n",
+    "\n",
+    "thrx_tc = {\n",
+    "    \"back_ground\": [0, 0.0, 0.0, 0.0],\n",
+    "    \"skin\": [80,1, 0.8, 0.7],\n",
+    "    \"bone\": [350, 0.98, 0.96, 0.93]\n",
+    "}\n",
+    "\n",
+    "thrx_to = {\n",
+    "    \"back_ground\": [0,0.0],\n",
+    "    \"skin\": [80,0.02],\n",
+    "    \"bone\": [350,1]\n",
+    "}\n",
+    "\n",
+    "\n",
+    "thrx_vol.render_volume(transfer_colors=thrx_tc , transfer_op=thrx_to, g_filter=True)\n",
+    "\n",
+    "ViewInteractiveWidget(thrx_vol.render_window)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "e01accab",
+   "metadata": {},
+   "source": [
+    "Thorax Volume Rendering after Gaussian filtering: different colors are being used for the bone(bone color) with intensity 350 and skin/other organs(skin color) with intensity 80"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 8,
+   "id": "94cf0dbe",
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "image read\n",
+      "image mapper created\n"
+     ]
+    },
+    {
+     "data": {
+      "application/vnd.jupyter.widget-view+json": {
+       "model_id": "72c20fecaf4849e0a7f14924ce1244d2",
+       "version_major": 2,
+       "version_minor": 0
+      },
+      "text/plain": [
+       "ViewInteractiveWidget(height=600, layout=Layout(height='auto', width='100%'), width=600)"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    }
+   ],
+   "source": [
+    "hip_vol = vtk_pipeline(path=hip_path, filetype='dicom', render_size=600)\n",
+    "\n",
+    "hip_tc = {\n",
+    "    \"back_ground\": [0, 0.0, 0.0, 0.0],\n",
+    "    \"skin\": [80,1, 0.8, 0.7],\n",
+    "    \"bone\": [350, 0.98, 0.96, 0.93]\n",
+    "}\n",
+    "\n",
+    "hip_to = {\n",
+    "    \"back_ground\": [0,0.0],\n",
+    "    \"skin\": [80,0.03],\n",
+    "    \"bone\": [350,1]\n",
+    "}\n",
+    "\n",
+    "\n",
+    "hip_vol.render_volume(transfer_colors=hip_tc , transfer_op=hip_to, g_filter=True)\n",
+    "\n",
+    "ViewInteractiveWidget(hip_vol.render_window)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "e4bb7a92",
+   "metadata": {},
+   "source": [
+    "Hip Volume Rendering after Gaussian filtering: different colors are being used for the bone (bone color) with intensity 350 and skin/other organs(skin color) with intensity 80"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "2f4808ba",
+   "metadata": {},
+   "source": [
+    "# User Input"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 13,
+   "id": "ee44fd44",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "application/vnd.jupyter.widget-view+json": {
+       "model_id": "1cffc907ef9e492f90213b6c7339f824",
+       "version_major": 2,
+       "version_minor": 0
+      },
+      "text/plain": [
+       "Dropdown(description='Image:', options=(('Head', '/home/mahsadibaji/mdsc689-03-notebooks/head.nii'), ('Hip', '…"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    },
+    {
+     "data": {
+      "application/vnd.jupyter.widget-view+json": {
+       "model_id": "c5dd062f3c07467f95a9fb5acb678126",
+       "version_major": 2,
+       "version_minor": 0
+      },
+      "text/plain": [
+       "Dropdown(description='File Type: ', index=1, options=('dicom', 'niftii'), value='niftii')"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    },
+    {
+     "data": {
+      "application/vnd.jupyter.widget-view+json": {
+       "model_id": "4d4d893517444405843941e2e3cdf469",
+       "version_major": 2,
+       "version_minor": 0
+      },
+      "text/plain": [
+       "Dropdown(description='Rendering Type: ', index=1, options=('surface', 'volume'), value='volume')"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    },
+    {
+     "data": {
+      "application/vnd.jupyter.widget-view+json": {
+       "model_id": "0c62ce0bf1524abda9c1084961ce43b9",
+       "version_major": 2,
+       "version_minor": 0
+      },
+      "text/plain": [
+       "Dropdown(description='Surface Method: ', index=2, options=('marching', 'contour', 'None'), value='None')"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    },
+    {
+     "data": {
+      "application/vnd.jupyter.widget-view+json": {
+       "model_id": "25778d8a47664c4294d82887203d19e1",
+       "version_major": 2,
+       "version_minor": 0
+      },
+      "text/plain": [
+       "IntText(value=0, description='iso_value:')"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    },
+    {
+     "data": {
+      "application/vnd.jupyter.widget-view+json": {
+       "model_id": "f14eb3d5c7de44888d16a281cd03be56",
+       "version_major": 2,
+       "version_minor": 0
+      },
+      "text/plain": [
+       "IntText(value=100, description='intenisty 1:')"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    },
+    {
+     "data": {
+      "application/vnd.jupyter.widget-view+json": {
+       "model_id": "9ab73f92bd6c43f78c8aa66715f4ef0f",
+       "version_major": 2,
+       "version_minor": 0
+      },
+      "text/plain": [
+       "IntText(value=300, description='intensity 2:')"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    },
+    {
+     "data": {
+      "application/vnd.jupyter.widget-view+json": {
+       "model_id": "0011169f8eb441989e061965e8ea00c3",
+       "version_major": 2,
+       "version_minor": 0
+      },
+      "text/plain": [
+       "Checkbox(value=True, description='apply Gaussian filter')"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    }
+   ],
+   "source": [
+    "image_options = [ ('Head', head_path), ('Hip', hip_path), ('Thorax', thrx_path)]\n",
+    "image = widgets.Dropdown(\n",
+    "    options=image_options,\n",
+    "    description='Image:',\n",
+    ")\n",
+    "filetype = widgets.Dropdown(\n",
+    "        options = ['dicom','niftii'],\n",
+    "        value = 'niftii',\n",
+    "        description = 'File Type: '\n",
+    ")\n",
+    "rendering = widgets.Dropdown(\n",
+    "        options = ['surface','volume'],\n",
+    "        value = 'volume',\n",
+    "        description = 'Rendering Type: '\n",
+    ")\n",
+    "method = widgets.Dropdown(\n",
+    "        options = ['marching','contour','None'],\n",
+    "        value = 'None',\n",
+    "        description = 'Surface Method: '\n",
+    ")\n",
+    "\n",
+    "iso_value = widgets.IntText(description=\"iso_value:\", value=0)\n",
+    "\n",
+    "tofilter = widgets.Checkbox(\n",
+    "    value=True,\n",
+    "    description='apply Gaussian filter',\n",
+    ")\n",
+    "\n",
+    "\n",
+    "thresh1 = widgets.IntText(description=\"intenisty 1:\", value=100)\n",
+    "thresh2 = widgets.IntText(description=\"intensity 2:\", value=300)\n",
+    "\n",
+    "display(image, filetype, rendering, method, iso_value, thresh1, thresh2, tofilter)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 16,
+   "id": "5af8a92f",
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "image read\n",
+      "MarchingCubes\n"
+     ]
+    },
+    {
+     "data": {
+      "application/vnd.jupyter.widget-view+json": {
+       "model_id": "e4ed47f8385f4ee289fa89d824bd1553",
+       "version_major": 2,
+       "version_minor": 0
+      },
+      "text/plain": [
+       "ViewInteractiveWidget(height=600, layout=Layout(height='auto', width='100%'), width=600)"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    }
+   ],
+   "source": [
+    "obj = vtk_pipeline(path=head_path, filetype='niftii', render_size=600)\n",
+    "if rendering.value == \"surface\":\n",
+    "    color=(1, 0.8, 0.7)\n",
+    "    obj.render_surface(iso_value=iso_value.value,color=color, g_filter=tofilter.value, method=method.value)\n",
+    "    \n",
+    "elif rendering.value == \"volume\":\n",
+    "    tc = {\n",
+    "        \"back_ground\": [0, 0.0, 0.0, 0.0],\n",
+    "        \"skin\": [thresh1.value,1, 0.8, 0.7],\n",
+    "        \"bone\": [thresh2.value, 0.98, 0.96, 0.93]\n",
+    "    }\n",
+    "\n",
+    "    to = {\n",
+    "        \"back_ground\": [0,0.0],\n",
+    "        \"skin\": [thresh1.value,0.03],\n",
+    "        \"bone\": [thresh2.value,1]\n",
+    "    }\n",
+    "\n",
+    "\n",
+    "    obj.render_volume(transfer_colors=tc , transfer_op=to, g_filter=tofilter.value)\n",
+    "\n",
+    "ViewInteractiveWidget(obj.render_window)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "5246b35e",
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "mdsc689-03",
+   "language": "python",
+   "name": "mdsc689-03"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.8.15"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}
